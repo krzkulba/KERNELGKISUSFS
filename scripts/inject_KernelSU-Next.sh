@@ -88,8 +88,6 @@ cd ..
 # ---------------------------------------------------------
 # KernelSU-Next Kbuild Hotfix (Universal)
 # ---------------------------------------------------------
-# Hotpatch strict Kbuild config check to prevent 'make clean' from crashing.
-# Placed here universally to protect both dynamic and stable pipeline channels.
 KBUILD_FILE="${MANAGER_DIR}/kernel/Kbuild"
 if [ -f "$KBUILD_FILE" ]; then
     if grep -q "KernelSU requires either CONFIG_KPROBES" "$KBUILD_FILE"; then
@@ -98,6 +96,20 @@ if [ -f "$KBUILD_FILE" ]; then
     else
         echo ">>> [NOTICE] Strict Kbuild check not found! Upstream likely fixed this. You can remove this hotpatch."
     fi
+fi
+
+# ---------------------------------------------------------
+# KernelSU-Next SELinux Hide LTO Polyfill
+# ---------------------------------------------------------
+# SuSFS services.c expects a global fake_state on kernels < 6.6.
+# KernelSU-Next removed it. We must polyfill it to prevent ld.lld panics.
+SELINUX_HIDE_FILE="${MANAGER_DIR}/kernel/feature/selinux_hide.c"
+if [ -f "$SELINUX_HIDE_FILE" ]; then
+    echo ">>> [HOTFIX] Polyfilling global fake_state definition to survive LTO..."
+    # Strip any existing declarations to prevent accidental redefinitions
+    sed -i -E 's/^[ \t]*(static )?struct selinux_state fake_state;//g' "$SELINUX_HIDE_FILE"
+    # Unconditionally append the polyfill
+    echo -e "\nstruct selinux_state fake_state = {0};" >> "$SELINUX_HIDE_FILE"
 fi
 
 echo ">>> KernelSU-Next integration complete."

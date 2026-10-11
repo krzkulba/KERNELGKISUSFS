@@ -80,6 +80,7 @@ if [ -f "$SELINUX_HIDE" ]; then
     done
 
     echo "  -> Enforced clean, native C declarations for SELinux hooks."
+
 fi
 
 # ========================================================================
