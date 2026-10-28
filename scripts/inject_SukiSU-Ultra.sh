@@ -3,41 +3,48 @@
 
 echo ">>> Executing Integration Module for SukiSU-Ultra..."
 
-OFFICIAL_REPO_URL="https://github.com/SukiSU-Ultra/SukiSU-Ultra.git"
-CUSTOM_REPO_URL="${KSU_VARIANT_REPO_URL:-https://github.com/shoey63/SukiSU-Ultra.git}"
-CUSTOM_REF="${KSU_VARIANT_REF:-stable}"
+# Override channel routing so both 'stable' and 'dynamic' runs pull the custom
+# SuSFS pt_regs commits from the shoey63 fork (while leaving 'main' untouched).
+if [ "${BUILD_CHANNEL}" != "main" ]; then
+    echo ">>> [OVERRIDE] Routing SukiSU-Ultra base clone to shoey63/SukiSU-Ultra (stable)..."
+    KSU_VARIANT_REPO_URL="https://github.com/shoey63/SukiSU-Ultra.git"
+    KSU_VARIANT_REF="stable"
+fi
 
-echo ">>> 1. Cloning custom branch (${CUSTOM_REF}) from ${CUSTOM_REPO_URL}..."
-git clone -b "${CUSTOM_REF}" "${CUSTOM_REPO_URL}" "${MANAGER_DIR}"
+echo ">>> 1. Cloning target branch (${KSU_VARIANT_REF}) from ${KSU_VARIANT_REPO_URL}..."
+git clone -b "${KSU_VARIANT_REF}" "${KSU_VARIANT_REPO_URL}" "${MANAGER_DIR}"
 
 ln -sfn "../${MANAGER_DIR}" "common/${MANAGER_DIR}"
 cd common
 # Run setup.sh BEFORE rebasing so it links common/drivers/kernelsu without clobbering git history
-bash "${MANAGER_DIR}/kernel/setup.sh" "${CUSTOM_REF}"
+bash "${MANAGER_DIR}/kernel/setup.sh" "${KSU_VARIANT_REF}"
 cd ..
 
 cd "${MANAGER_DIR}"
 
-echo ">>> 2. Fetching latest official upstream (main + tags)..."
-git fetch --tags --force "${OFFICIAL_REPO_URL}" main
-
 if [ "${USE_DYNAMIC_TRANSPLANT}" == "true" ]; then
-    echo ">>> 3. Dynamic mode active: Rebasing '${CUSTOM_REF}' onto bleeding-edge upstream/main..."
+    echo ">>> 2. Dynamic mode active: Fetching latest official upstream (${TARGET_BRANCH})..."
+    git fetch --tags --force "https://github.com/${UPSTREAM_REPO}.git" "${TARGET_BRANCH}"
+
+    echo ">>> 3. Rebasing '${KSU_VARIANT_REF}' onto bleeding-edge upstream/${TARGET_BRANCH}..."
     git config user.name "github-actions[bot]"
     git config user.email "github-actions[bot]@users.noreply.github.com"
 
     if git rebase FETCH_HEAD; then
         echo "  -> On-the-fly rebase succeeded cleanly!"
-        UPSTREAM_BRANCH="main"
+        UPSTREAM_BRANCH="${TARGET_BRANCH}"
     else
         echo "  -> [WARNING] Rebase conflict detected with latest upstream!"
         git rebase --abort
-        echo "  -> Aborted rebase and fell back to last known-good '${CUSTOM_REF}' state."
-        UPSTREAM_BRANCH="${CUSTOM_REF}"
+        echo "  -> Aborted rebase and fell back to last known-good '${KSU_VARIANT_REF}' state."
+        UPSTREAM_BRANCH="${KSU_VARIANT_REF}"
     fi
 else
-    echo ">>> 3. Safe fallback channel active: Using pinned '${CUSTOM_REF}' state without rebasing."
-    UPSTREAM_BRANCH="${CUSTOM_REF}"
+    echo ">>> 2. Safe fallback channel active: Fetching upstream sync point..."
+    git fetch --quiet --tags --force "https://github.com/${UPSTREAM_REPO}.git" "${TARGET_BRANCH}"
+    
+    echo ">>> 3. Using pinned '${KSU_VARIANT_REF}' state without rebasing."
+    UPSTREAM_BRANCH="${KSU_VARIANT_REF}"
 fi
 
 # 4. Calculate the official upstream sync point for version count and Manager APK matching
@@ -52,44 +59,8 @@ CALCULATED_TAG=$(git describe --tags --abbrev=0 "${UPSTREAM_HASH}" 2>/dev/null |
 
 cd ..
 
-# ---------------------------------------------------------
-# SukiSU-Ultra Linker Hotfixes (GOT/PLT Panic Fix)
-# ---------------------------------------------------------
-K_VER=$(grep "^VERSION =" common/Makefile | tr -d ' ' | cut -d'=' -f2 || echo "0")
-K_PATCH=$(grep "^PATCHLEVEL =" common/Makefile | tr -d ' ' | cut -d'=' -f2 || echo "0")
-
-if [ "$K_VER" = "6" ] && [ "$K_PATCH" -ge "6" ]; then
-    SELINUX_HIDE_FILE="${MANAGER_DIR}/kernel/feature/selinux_hide.c"
-    
-    if [ -f "$SELINUX_HIDE_FILE" ]; then
-        echo ">>> [HOTFIX] Hardening trailing __weak stubs to prevent Android GKI GOT/PLT panics..."
-        sed -i 's/) __weak;/);/g' "$SELINUX_HIDE_FILE"
-        sed -i 's/__weak//g' "$SELINUX_HIDE_FILE"
-        echo "  -> Trailing weak stubs successfully hardened into strong LTO symbols."
-    fi
-fi
-
-# ---------------------------------------------------------
-# SukiSU-Ultra Clang 17 & Linker Undefined Symbol Hotfix
-# ---------------------------------------------------------
-K_VER=$(grep "^VERSION =" common/Makefile | tr -d ' ' | cut -d'=' -f2 || echo "0")
-K_PATCH=$(grep "^PATCHLEVEL =" common/Makefile | tr -d ' ' | cut -d'=' -f2 || echo "0")
-
-if [ "$K_VER" = "6" ] && [ "$K_PATCH" -ge "6" ]; then
-    SELINUX_HIDE_FILE="${MANAGER_DIR}/kernel/feature/selinux_hide.c"
-    
-    if [ -f "$SELINUX_HIDE_FILE" ]; then
-        echo ">>> [HOTFIX] Neutering missing weak fallbacks via dead-code elimination..."
-        
-        # Replace the check with 'if (0)' to optimize away the undefined linker references
-        sed -i -E 's/if \([[:space:]]*\&?security_dump_masked_av_fn[[:space:]]*\)/if (0)/g' "$SELINUX_HIDE_FILE"
-        sed -i -E 's/if \([[:space:]]*\&?context_struct_compute_av_fn[[:space:]]*\)/if (0)/g' "$SELINUX_HIDE_FILE"
-        
-        echo "  -> Unresolved weak fallback blocks eliminated."
-    fi
-fi
-
 echo "  -> Target Tag: $CALCULATED_TAG"
 echo "  -> Target Hash: $UPSTREAM_HASH"
 echo "  -> Target Count: $CALCULATED_COUNT"
+
 echo ">>> SukiSU-Ultra integration complete."
